@@ -482,8 +482,12 @@ static struct isp_preset *isp_select_preset(struct apple_isp *isp, u32 width,
 static int isp_vidioc_querycap(struct file *file, void *priv,
 			       struct v4l2_capability *cap)
 {
+	struct apple_isp *isp = video_drvdata(file);
+
 	strscpy(cap->card, APPLE_ISP_CARD_NAME, sizeof(cap->card));
 	strscpy(cap->driver, APPLE_ISP_DEVICE_NAME, sizeof(cap->driver));
+	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
+		 dev_name(isp->dev));
 
 	return 0;
 }
@@ -822,8 +826,12 @@ int apple_isp_setup_video(struct apple_isp *isp)
 	isp->v4l2_dev.mdev = &isp->mdev;
 	isp->mdev.ops = &isp_media_device_ops;
 	isp->mdev.dev = isp->dev;
-	strscpy(isp->mdev.model, APPLE_ISP_DEVICE_NAME,
+	strscpy(isp->mdev.driver_name, APPLE_ISP_DEVICE_NAME,
+		sizeof(isp->mdev.driver_name));
+	strscpy(isp->mdev.model, APPLE_ISP_CARD_NAME,
 		sizeof(isp->mdev.model));
+	snprintf(isp->mdev.bus_info, sizeof(isp->mdev.bus_info), "platform:%s",
+		 dev_name(isp->dev));
 
 	err = media_device_register(&isp->mdev);
 	if (err) {
@@ -841,7 +849,7 @@ int apple_isp_setup_video(struct apple_isp *isp)
 
 	vbq->drv_priv = isp;
 	vbq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	vbq->io_modes = VB2_MMAP;
+	vbq->io_modes = VB2_MMAP | VB2_DMABUF;
 	vbq->dev = isp->dev;
 	vbq->ops = &isp_vb2_ops;
 	vbq->mem_ops = &vb2_dma_sg_memops;
@@ -859,10 +867,11 @@ int apple_isp_setup_video(struct apple_isp *isp)
 	vdev->queue = vbq;
 	vdev->fops = &isp_v4l2_fops;
 	vdev->ioctl_ops = &isp_v4l2_ioctl_ops;
-	vdev->device_caps = V4L2_BUF_TYPE_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
+	vdev->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
 	if (isp->multiplanar)
 		vdev->device_caps |= V4L2_CAP_VIDEO_CAPTURE_MPLANE;
 	vdev->v4l2_dev = &isp->v4l2_dev;
+	vdev->entity.flags |= MEDIA_ENT_FL_DEFAULT;
 	vdev->vfl_type = VFL_TYPE_VIDEO;
 	vdev->vfl_dir = VFL_DIR_RX;
 	vdev->release = video_device_release_empty;
