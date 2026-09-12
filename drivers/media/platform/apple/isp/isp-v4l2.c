@@ -18,13 +18,8 @@
 
 #define ISP_MIN_FRAMES 2
 #define ISP_MAX_PLANES 4
-#define ISP_MAX_PIX_FORMATS 2
 #define ISP_BUFFER_TIMEOUT msecs_to_jiffies(1500)
 #define ISP_STRIDE_ALIGNMENT 64
-
-static bool multiplanar = false;
-module_param(multiplanar, bool, 0644);
-MODULE_PARM_DESC(multiplanar, "Enable multiplanar API");
 
 struct isp_buflist_buffer {
 	u64 iovas[ISP_MAX_PLANES];
@@ -482,12 +477,8 @@ static struct isp_preset *isp_select_preset(struct apple_isp *isp, u32 width,
 static int isp_vidioc_querycap(struct file *file, void *priv,
 			       struct v4l2_capability *cap)
 {
-	struct apple_isp *isp = video_drvdata(file);
-
 	strscpy(cap->card, APPLE_ISP_CARD_NAME, sizeof(cap->card));
 	strscpy(cap->driver, APPLE_ISP_DEVICE_NAME, sizeof(cap->driver));
-	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
-		 dev_name(isp->dev));
 
 	return 0;
 }
@@ -495,23 +486,10 @@ static int isp_vidioc_querycap(struct file *file, void *priv,
 static int isp_vidioc_enum_format(struct file *file, void *fh,
 				  struct v4l2_fmtdesc *f)
 {
-	struct apple_isp *isp = video_drvdata(file);
-
-	if (f->index >= ISP_MAX_PIX_FORMATS)
+	if (f->index)
 		return -EINVAL;
 
-	switch (f->index) {
-	case 0:
-		f->pixelformat = V4L2_PIX_FMT_NV12;
-		break;
-	case 1:
-		if (!isp->multiplanar)
-			return -EINVAL;
-		f->pixelformat = V4L2_PIX_FMT_NV12M;
-		break;
-	default:
-		return -EINVAL;
-	}
+	f->pixelformat = V4L2_PIX_FMT_NV12;
 
 	return 0;
 }
@@ -524,8 +502,7 @@ static int isp_vidioc_enum_framesizes(struct file *file, void *fh,
 	if (f->index >= isp->num_presets)
 		return -EINVAL;
 
-	if ((f->pixel_format != V4L2_PIX_FMT_NV12) &&
-	    (f->pixel_format != V4L2_PIX_FMT_NV12M))
+	if (f->pixel_format != V4L2_PIX_FMT_NV12)
 		return -EINVAL;
 
 	f->discrete.width = isp->presets[f->index].output_dim.x;
@@ -563,25 +540,6 @@ static inline void isp_get_sp_pix_format(struct apple_isp *isp,
 	f->fmt.pix.xfer_func = V4L2_XFER_FUNC_709;
 }
 
-static inline void isp_get_mp_pix_format(struct apple_isp *isp,
-					 struct v4l2_format *f,
-					 struct isp_format *fmt)
-{
-	f->fmt.pix_mp.width = fmt->preset->output_dim.x;
-	f->fmt.pix_mp.height = fmt->preset->output_dim.y;
-	f->fmt.pix_mp.num_planes = fmt->num_planes;
-	for (int i = 0; i < fmt->num_planes; i++) {
-		f->fmt.pix_mp.plane_fmt[i].sizeimage = fmt->plane_size[i];
-		f->fmt.pix_mp.plane_fmt[i].bytesperline = fmt->strides[i];
-	}
-
-	f->fmt.pix_mp.field = V4L2_FIELD_NONE;
-	f->fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12M;
-	f->fmt.pix_mp.colorspace = V4L2_COLORSPACE_REC709;
-	f->fmt.pix_mp.ycbcr_enc = V4L2_YCBCR_ENC_709;
-	f->fmt.pix_mp.xfer_func = V4L2_XFER_FUNC_709;
-}
-
 static int isp_vidioc_get_format(struct file *file, void *fh,
 				 struct v4l2_format *f)
 {
@@ -608,8 +566,6 @@ static int isp_vidioc_set_format(struct file *file, void *fh,
 
 	isp_get_sp_pix_format(isp, f, fmt);
 
-	isp->vbq.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
 	return 0;
 }
 
@@ -627,66 +583,6 @@ static int isp_vidioc_try_format(struct file *file, void *fh,
 		return err;
 
 	isp_get_sp_pix_format(isp, f, &fmt);
-
-	return 0;
-}
-
-static int isp_vidioc_get_format_mplane(struct file *file, void *fh,
-					struct v4l2_format *f)
-{
-	struct apple_isp *isp = video_drvdata(file);
-	struct isp_format *fmt = isp_get_current_format(isp);
-
-	if (!isp->multiplanar)
-		return -ENOTTY;
-
-	isp_get_mp_pix_format(isp, f, fmt);
-
-	return 0;
-}
-
-static int isp_vidioc_set_format_mplane(struct file *file, void *fh,
-					struct v4l2_format *f)
-{
-	struct apple_isp *isp = video_drvdata(file);
-	struct isp_format *fmt = isp_get_current_format(isp);
-	struct isp_preset *preset;
-	int err;
-
-	if (!isp->multiplanar)
-		return -ENOTTY;
-
-	preset = isp_select_preset(isp, f->fmt.pix_mp.width,
-				   f->fmt.pix_mp.height);
-	err = isp_set_preset(isp, fmt, preset);
-	if (err)
-		return err;
-
-	isp_get_mp_pix_format(isp, f, fmt);
-
-	isp->vbq.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-
-	return 0;
-}
-
-static int isp_vidioc_try_format_mplane(struct file *file, void *fh,
-					struct v4l2_format *f)
-{
-	struct apple_isp *isp = video_drvdata(file);
-	struct isp_format fmt = *isp_get_current_format(isp);
-	struct isp_preset *preset;
-	int err;
-
-	if (!isp->multiplanar)
-		return -ENOTTY;
-
-	preset = isp_select_preset(isp, f->fmt.pix_mp.width,
-				   f->fmt.pix_mp.height);
-	err = isp_set_preset(isp, &fmt, preset);
-	if (err)
-		return err;
-
-	isp_get_mp_pix_format(isp, f, &fmt);
 
 	return 0;
 }
@@ -721,11 +617,7 @@ static int isp_vidioc_set_input(struct file *file, void *fh, unsigned int i)
 static int isp_vidioc_get_param(struct file *file, void *fh,
 				struct v4l2_streamparm *a)
 {
-	struct apple_isp *isp = video_drvdata(file);
-
-	if (a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE &&
-	    (!isp->multiplanar ||
-	     a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE))
+	if (a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
 	a->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
@@ -739,11 +631,7 @@ static int isp_vidioc_get_param(struct file *file, void *fh,
 static int isp_vidioc_set_param(struct file *file, void *fh,
 				struct v4l2_streamparm *a)
 {
-	struct apple_isp *isp = video_drvdata(file);
-
-	if (a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE &&
-	    (!isp->multiplanar ||
-	     a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE))
+	if (a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
 	/* Not supporting frame rate sets. No use. Plus floats. */
@@ -762,10 +650,6 @@ static const struct v4l2_ioctl_ops isp_v4l2_ioctl_ops = {
 	.vidioc_g_fmt_vid_cap = isp_vidioc_get_format,
 	.vidioc_s_fmt_vid_cap = isp_vidioc_set_format,
 	.vidioc_try_fmt_vid_cap = isp_vidioc_try_format,
-	.vidioc_g_fmt_vid_cap_mplane = isp_vidioc_get_format_mplane,
-	.vidioc_s_fmt_vid_cap_mplane = isp_vidioc_set_format_mplane,
-	.vidioc_try_fmt_vid_cap_mplane = isp_vidioc_try_format_mplane,
-
 	.vidioc_enum_framesizes = isp_vidioc_enum_framesizes,
 	.vidioc_enum_frameintervals = isp_vidioc_enum_frameintervals,
 	.vidioc_enum_input = isp_vidioc_enum_input,
@@ -826,25 +710,13 @@ int apple_isp_setup_video(struct apple_isp *isp)
 	isp->v4l2_dev.mdev = &isp->mdev;
 	isp->mdev.ops = &isp_media_device_ops;
 	isp->mdev.dev = isp->dev;
-	strscpy(isp->mdev.driver_name, APPLE_ISP_DEVICE_NAME,
-		sizeof(isp->mdev.driver_name));
 	strscpy(isp->mdev.model, APPLE_ISP_CARD_NAME,
 		sizeof(isp->mdev.model));
-	snprintf(isp->mdev.bus_info, sizeof(isp->mdev.bus_info), "platform:%s",
-		 dev_name(isp->dev));
-
-	err = media_device_register(&isp->mdev);
-	if (err) {
-		dev_err(isp->dev, "failed to register media device: %d\n", err);
-		goto media_cleanup;
-	}
-
-	isp->multiplanar = multiplanar;
 
 	err = v4l2_device_register(isp->dev, &isp->v4l2_dev);
 	if (err) {
 		dev_err(isp->dev, "failed to register v4l2 device: %d\n", err);
-		goto media_unregister;
+		goto media_cleanup;
 	}
 
 	vbq->drv_priv = isp;
@@ -868,8 +740,6 @@ int apple_isp_setup_video(struct apple_isp *isp)
 	vdev->fops = &isp_v4l2_fops;
 	vdev->ioctl_ops = &isp_v4l2_ioctl_ops;
 	vdev->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
-	if (isp->multiplanar)
-		vdev->device_caps |= V4L2_CAP_VIDEO_CAPTURE_MPLANE;
 	vdev->v4l2_dev = &isp->v4l2_dev;
 	vdev->entity.flags |= MEDIA_ENT_FL_DEFAULT;
 	vdev->vfl_type = VFL_TYPE_VIDEO;
@@ -879,18 +749,33 @@ int apple_isp_setup_video(struct apple_isp *isp)
 	strscpy(vdev->name, APPLE_ISP_DEVICE_NAME, sizeof(vdev->name));
 	video_set_drvdata(vdev, isp);
 
+	isp->video_pad.flags = MEDIA_PAD_FL_SINK;
+	err = media_entity_pads_init(&vdev->entity, 1, &isp->video_pad);
+	if (err) {
+		dev_err(isp->dev, "failed to initialize media entity: %d\n", err);
+		goto v4l2_unregister;
+	}
+
 	err = video_register_device(vdev, VFL_TYPE_VIDEO, 0);
 	if (err) {
 		dev_err(isp->dev, "failed to register video device: %d\n", err);
-		goto v4l2_unregister;
+		goto entity_cleanup;
+	}
+
+	err = media_device_register(&isp->mdev);
+	if (err) {
+		dev_err(isp->dev, "failed to register media device: %d\n", err);
+		goto video_unregister;
 	}
 
 	return 0;
 
+video_unregister:
+	vb2_video_unregister_device(vdev);
+entity_cleanup:
+	media_entity_cleanup(&vdev->entity);
 v4l2_unregister:
 	v4l2_device_unregister(&isp->v4l2_dev);
-media_unregister:
-	media_device_unregister(&isp->mdev);
 media_cleanup:
 	media_device_cleanup(&isp->mdev);
 surf_cleanup:
@@ -906,6 +791,7 @@ surf_cleanup:
 void apple_isp_remove_video(struct apple_isp *isp)
 {
 	vb2_video_unregister_device(&isp->vdev);
+	media_entity_cleanup(&isp->vdev.entity);
 	v4l2_device_unregister(&isp->v4l2_dev);
 	media_device_unregister(&isp->mdev);
 	media_device_cleanup(&isp->mdev);

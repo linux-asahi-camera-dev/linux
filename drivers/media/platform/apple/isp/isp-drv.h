@@ -202,13 +202,12 @@ struct apple_isp {
 	unsigned int current_ch;
 
 	struct video_device vdev;
+	struct media_pad video_pad;
 	struct media_device mdev;
 	struct v4l2_device v4l2_dev;
 	struct vb2_queue vbq;
 	struct mutex video_lock;
 	unsigned int sequence;
-	bool multiplanar;
-
 	int pd_count;
 	struct device **pd_dev;
 	struct device_link **pd_link;
