@@ -772,11 +772,6 @@ int apple_isp_setup_video(struct apple_isp *isp)
 
 	err = media_device_register(&isp->mdev);
 	if (err) {
-		/*
-		 * Keep the V4L2 node alive, but detach its partial media graph.
-		 * media_devnode_register() releases the failed devnode, while
-		 * __media_device_register() leaves mdev.devnode pointing to it.
-		 */
 		isp->mdev.devnode = NULL;
 		if (vdev->intf_devnode) {
 			media_devnode_remove(vdev->intf_devnode);
