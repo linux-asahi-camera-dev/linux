@@ -21,6 +21,10 @@
 #define ISP_BUFFER_TIMEOUT msecs_to_jiffies(1500)
 #define ISP_STRIDE_ALIGNMENT 64
 
+static bool multiplanar;
+module_param(multiplanar, bool, 0644);
+MODULE_PARM_DESC(multiplanar, "Deprecated; ignored");
+
 struct isp_buflist_buffer {
 	u64 iovas[ISP_MAX_PLANES];
 	u32 flags[ISP_MAX_PLANES];
@@ -696,6 +700,10 @@ int apple_isp_setup_video(struct apple_isp *isp)
 		return err;
 	}
 
+	if (multiplanar)
+		dev_warn(isp->dev,
+			 "multiplanar mode is unsupported; using single-planar API\n");
+
 	for (int i = 0; i < ARRAY_SIZE(isp->meta_surfs); i++) {
 		isp->meta_surfs[i] =
 			isp_alloc_surface_vmap(isp, isp->hw->meta_size);
@@ -764,14 +772,25 @@ int apple_isp_setup_video(struct apple_isp *isp)
 
 	err = media_device_register(&isp->mdev);
 	if (err) {
-		dev_err(isp->dev, "failed to register media device: %d\n", err);
-		goto video_unregister;
+		/*
+		 * Keep the V4L2 node alive, but detach its partial media graph.
+		 * media_devnode_register() releases the failed devnode, while
+		 * __media_device_register() leaves mdev.devnode pointing to it.
+		 */
+		isp->mdev.devnode = NULL;
+		if (vdev->intf_devnode) {
+			media_devnode_remove(vdev->intf_devnode);
+			vdev->intf_devnode = NULL;
+		}
+		media_device_unregister_entity(&vdev->entity);
+		isp->v4l2_dev.mdev = NULL;
+		dev_warn(isp->dev,
+			 "media device registration failed (%d); continuing without media device\n",
+			 err);
 	}
 
 	return 0;
 
-video_unregister:
-	vb2_video_unregister_device(vdev);
 entity_cleanup:
 	media_entity_cleanup(&vdev->entity);
 v4l2_unregister:
@@ -791,9 +810,9 @@ surf_cleanup:
 void apple_isp_remove_video(struct apple_isp *isp)
 {
 	vb2_video_unregister_device(&isp->vdev);
-	media_entity_cleanup(&isp->vdev.entity);
 	v4l2_device_unregister(&isp->v4l2_dev);
 	media_device_unregister(&isp->mdev);
+	media_entity_cleanup(&isp->vdev.entity);
 	media_device_cleanup(&isp->mdev);
 	for (int i = 0; i < ARRAY_SIZE(isp->meta_surfs); i++) {
 		if (isp->meta_surfs[i])
